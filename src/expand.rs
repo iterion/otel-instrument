@@ -117,16 +117,10 @@ fn gen_block<B: ToTokens>(
         .as_ref()
         .map(|name| quote!(#name))
         .unwrap_or_else(|| quote!(#instrumented_function_name));
+    let span_kind = quote!(opentelemetry::trace::SpanKind::Server);
 
     //let args_level = args.level();
     //let level = args_level.clone();
-
-    //let follows_from = args.follows_from.iter();
-    //let follows_from = quote! {
-    //    #(for cause in #follows_from {
-    //        __tracing_attr_span.follows_from(cause);
-    //    })*
-    //};
 
     // generate this inside a closure, so we can return early on errors.
     let span = (|| {
@@ -233,7 +227,7 @@ fn gen_block<B: ToTokens>(
         //))
         quote!(__otel_tracer
             .span_builder(#span_name)
-            .with_kind(SpanKind::Client)
+            .with_kind(#span_kind)
             .start(&__otel_tracer))
     })();
 
@@ -285,11 +279,11 @@ fn gen_block<B: ToTokens>(
         );
 
         return quote!(
+            use opentelemetry::trace::{FutureExt as _, Tracer as _, TraceContextExt as _};
             #tracer_setup
             let __otel_attr_span = #span;
             let __otel_cx = opentelemetry::Context::current_with_span(__otel_attr_span);
             let __tracing_instrument_future = #mk_fut;
-            use opentelemetry::trace::FutureExt as _;
             __tracing_instrument_future.with_context(__otel_cx).await
         );
     }
