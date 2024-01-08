@@ -10,7 +10,7 @@ use syn::{
 };
 
 use crate::{
-    attr::{Field, Fields, FormatMode, InstrumentArgs, Level},
+    attr::{Attribute, Attributes, FormatMode, InstrumentArgs, Level},
     MaybeItemFn, MaybeItemFnRef,
 };
 
@@ -159,60 +159,62 @@ fn gen_block<B: ToTokens>(
             })
             .collect();
 
-        //for skip in &args.skips {
-        //    if !param_names.iter().map(|(user, _)| user).any(|y| y == skip) {
-        //        return quote_spanned! {skip.span()=>
-        //            compile_error!("attempting to skip non-existent parameter")
-        //        };
-        //    }
-        //}
+        for skip in &args.skips {
+            if !param_names.iter().map(|(user, _)| user).any(|y| y == skip) {
+                return quote_spanned! {skip.span()=>
+                    compile_error!("attempting to skip non-existent parameter")
+                };
+            }
+        }
 
         //let target = args.target();
 
         //let parent = args.parent.iter();
 
-        //// filter out skipped fields
-        //let quoted_fields: Vec<_> = param_names
-        //    .iter()
-        //    .filter(|(param, _)| {
-        //        if args.skips.contains(param) {
-        //            return false;
-        //        }
+        // filter out skipped fields
+        let quoted_fields: Vec<_> = param_names
+            .iter()
+            .filter(|(param, _)| {
+                if args.skip_all || args.skips.contains(param) {
+                    return false;
+                }
 
-        //        // If any parameters have the same name as a custom field, skip
-        //        // and allow them to be formatted by the custom field.
-        //        if let Some(ref fields) = args.fields {
-        //            fields.0.iter().all(|Field { ref name, .. }| {
-        //                let first = name.first();
-        //                first != name.last() || !first.iter().any(|name| name == &param)
-        //            })
-        //        } else {
-        //            true
-        //        }
-        //    })
-        //    .map(|(user_name, (real_name, record_type))| match record_type {
-        //        RecordType::Value => quote!(#user_name = #real_name),
-        //        RecordType::Debug => quote!(#user_name = tracing::field::debug(&#real_name)),
-        //    })
-        //    .collect();
+                // If any parameters have the same name as a custom field, skip
+                // and allow them to be formatted by the custom field.
+                if let Some(ref attributes) = args.attributes {
+                    attributes.0.iter().all(|Attribute { ref name, .. }| {
+                        let first = name.first();
+                        first != name.last() || !first.iter().any(|name| name == &param)
+                    })
+                } else {
+                    true
+                }
+            })
+            .map(|(user_name, (real_name, record_type))| match record_type {
+                RecordType::Value => {
+                    quote!(span.set_attribute(KeyValue::new(#user_name, #real_name)))
+                }
+                RecordType::Debug => quote!(#user_name = tracing::field::debug(&#real_name)),
+            })
+            .collect();
 
-        //// replace every use of a variable with its original name
-        //if let Some(Fields(ref mut fields)) = args.fields {
-        //    let mut replacer = IdentAndTypesRenamer {
-        //        idents: param_names.into_iter().map(|(a, (b, _))| (a, b)).collect(),
-        //        types: Vec::new(),
-        //    };
+        // replace every use of a variable with its original name
+        if let Some(Attributes(ref mut attributes)) = args.attributes {
+            let mut replacer = IdentAndTypesRenamer {
+                idents: param_names.into_iter().map(|(a, (b, _))| (a, b)).collect(),
+                types: Vec::new(),
+            };
 
-        //    // when async-trait <=0.1.43 is in use, replace instances
-        //    // of the "Self" type inside the fields values
-        //    if let Some(self_type) = self_type {
-        //        replacer.types.push(("Self", self_type.clone()));
-        //    }
+            // when async-trait <=0.1.43 is in use, replace instances
+            // of the "Self" type inside the fields values
+            if let Some(self_type) = self_type {
+                replacer.types.push(("Self", self_type.clone()));
+            }
 
-        //    for e in fields.iter_mut().filter_map(|f| f.value.as_mut()) {
-        //        syn::visit_mut::visit_expr_mut(&mut replacer, e);
-        //    }
-        //}
+            for e in attributes.iter_mut().filter_map(|f| f.value.as_mut()) {
+                syn::visit_mut::visit_expr_mut(&mut replacer, e);
+            }
+        }
 
         //let custom_fields = &args.fields;
 
@@ -225,10 +227,14 @@ fn gen_block<B: ToTokens>(
         //    #custom_fields
 
         //))
-        quote!(__otel_tracer
-            .span_builder(#span_name)
-            .with_kind(#span_kind)
-            .start(&__otel_tracer))
+
+        quote!(
+            let __otel_attr_span = __otel_tracer
+                .span_builder(#span_name)
+                .with_kind(#span_kind)
+                .start(&__otel_tracer);
+            #(#quoted_fields;)*
+        )
     })();
 
     //let target = args.target();
@@ -281,7 +287,7 @@ fn gen_block<B: ToTokens>(
         return quote!(
             use opentelemetry::trace::{FutureExt as _, Tracer as _, TraceContextExt as _};
             #tracer_setup
-            let __otel_attr_span = #span;
+            #span
             let __otel_cx = opentelemetry::Context::current_with_span(__otel_attr_span);
             let __tracing_instrument_future = #mk_fut;
             __tracing_instrument_future.with_context(__otel_cx).await

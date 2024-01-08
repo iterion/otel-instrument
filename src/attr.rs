@@ -18,11 +18,12 @@ pub(crate) struct EventArgs {
 pub(crate) struct InstrumentArgs {
     //level: Option<Level>,
     pub(crate) name: Option<LitStr>,
-    //target: Option<LitStr>,
+    pub(crate) scope: Option<LitStr>,
     //pub(crate) parent: Option<Expr>,
     //pub(crate) follows_from: Option<Expr>,
-    //pub(crate) skips: HashSet<Ident>,
-    //pub(crate) fields: Option<Fields>,
+    pub(crate) skips: HashSet<Ident>,
+    pub(crate) skip_all: bool
+    pub(crate) attributes: Option<Attributes>,
     //pub(crate) err_args: Option<EventArgs>,
     //pub(crate) ret_args: Option<EventArgs>,
     ///// Errors describing any unrecognized parse inputs that we skipped.
@@ -74,28 +75,34 @@ impl Parse for InstrumentArgs {
             //    }
             //    let parent = input.parse::<ExprArg<kw::parent>>()?;
             //    args.parent = Some(parent.value);
-            //} else if lookahead.peek(kw::follows_from) {
-            //    if args.target.is_some() {
-            //        return Err(input.error("expected only a single `follows_from` argument"));
-            //    }
-            //    let follows_from = input.parse::<ExprArg<kw::follows_from>>()?;
-            //    args.follows_from = Some(follows_from.value);
             //} else if lookahead.peek(kw::level) {
             //    if args.level.is_some() {
             //        return Err(input.error("expected only a single `level` argument"));
             //    }
             //    args.level = Some(input.parse()?);
-            //} else if lookahead.peek(kw::skip) {
-            //    if !args.skips.is_empty() {
-            //        return Err(input.error("expected only a single `skip` argument"));
-            //    }
-            //    let Skips(skips) = input.parse()?;
-            //    args.skips = skips;
-            //} else if lookahead.peek(kw::fields) {
-            //    if args.fields.is_some() {
-            //        return Err(input.error("expected only a single `fields` argument"));
-            //    }
-            //    args.fields = Some(input.parse()?);
+            } else if lookahead.peek(kw::skip) {
+                if !args.skips.is_empty() {
+                    return Err(input.error("expected only a single `skip` argument"));
+                }
+                if args.skip_all {
+                    return Err(input.error("expected either `skip` or `skip_all` argument"));
+                }
+                let Skips(skips) = input.parse()?;
+                args.skips = skips;
+            } else if lookahead.peek(kw::skip_all) {
+                if args.skip_all {
+                    return Err(input.error("expected only a single `skip_all` argument"));
+                }
+                if !args.skips.is_empty() {
+                    return Err(input.error("expected either `skip` or `skip_all` argument"));
+                }
+                let _ = input.parse::<kw::skip_all>()?;
+                args.skip_all = true;
+            } else if lookahead.peek(kw::attributes) {
+                if args.attributes.is_some() {
+                    return Err(input.error("expected only a single `fields` argument"));
+                }
+                args.attributes = Some(input.parse()?);
             //} else if lookahead.peek(kw::err) {
             //    let _ = input.parse::<kw::err>();
             //    let err_args = EventArgs::parse(input)?;
@@ -104,8 +111,8 @@ impl Parse for InstrumentArgs {
             //    let _ = input.parse::<kw::ret>()?;
             //    let ret_args = EventArgs::parse(input)?;
             //    args.ret_args = Some(ret_args);
-            //} else if lookahead.peek(Token![,]) {
-            //    let _ = input.parse::<Token![,]>()?;
+            } else if lookahead.peek(Token![,]) {
+                let _ = input.parse::<Token![,]>()?;
             } else {
                 // We found a token that we didn't expect!
                 // We want to emit warnings for these, rather than errors, so
@@ -236,57 +243,57 @@ pub(crate) enum FormatMode {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Fields(pub(crate) Punctuated<Field, Token![,]>);
+pub(crate) struct Attributes(pub(crate) Punctuated<Attribute, Token![,]>);
 
 #[derive(Clone, Debug)]
-pub(crate) struct Field {
+pub(crate) struct Attribute {
     pub(crate) name: Punctuated<Ident, Token![.]>,
     pub(crate) value: Option<Expr>,
-    pub(crate) kind: FieldKind,
+    pub(crate) kind: AttributeKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum FieldKind {
+pub(crate) enum AttributeKind {
     Debug,
     Display,
     Value,
 }
 
-impl Parse for Fields {
+impl Parse for Attributes {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let _ = input.parse::<kw::fields>();
+        let _ = input.parse::<kw::attributes>();
         let content;
         let _ = syn::parenthesized!(content in input);
-        let fields = content.parse_terminated(Field::parse, Token![,])?;
-        Ok(Self(fields))
+        let attributes = content.parse_terminated(Attribute::parse, Token![,])?;
+        Ok(Self(attributes))
     }
 }
 
-impl ToTokens for Fields {
+impl ToTokens for Attributes {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.0.to_tokens(tokens)
     }
 }
 
-impl Parse for Field {
+impl Parse for Attribute {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut kind = FieldKind::Value;
+        let mut kind = AttributeKind::Value;
         if input.peek(Token![%]) {
             input.parse::<Token![%]>()?;
-            kind = FieldKind::Display;
+            kind = AttributeKind::Display;
         } else if input.peek(Token![?]) {
             input.parse::<Token![?]>()?;
-            kind = FieldKind::Debug;
+            kind = AttributeKind::Debug;
         };
         let name = Punctuated::parse_separated_nonempty_with(input, Ident::parse_any)?;
         let value = if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
             if input.peek(Token![%]) {
                 input.parse::<Token![%]>()?;
-                kind = FieldKind::Display;
+                kind = AttributeKind::Display;
             } else if input.peek(Token![?]) {
                 input.parse::<Token![?]>()?;
-                kind = FieldKind::Debug;
+                kind = AttributeKind::Debug;
             };
             Some(input.parse()?)
         } else {
@@ -296,7 +303,7 @@ impl Parse for Field {
     }
 }
 
-impl ToTokens for Field {
+impl ToTokens for Attribute {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         if let Some(ref value) = self.value {
             let name = &self.name;
@@ -304,7 +311,7 @@ impl ToTokens for Field {
             tokens.extend(quote! {
                 #name = #kind #value
             })
-        } else if self.kind == FieldKind::Value {
+        } else if self.kind == AttributeKind::Value {
             // XXX(eliza): I don't like that fields without values produce
             // empty fields rather than local variable shorthand...but,
             // we've released a version where field names without values in
@@ -319,11 +326,11 @@ impl ToTokens for Field {
     }
 }
 
-impl ToTokens for FieldKind {
+impl ToTokens for AttributeKind {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            FieldKind::Debug => tokens.extend(quote! { ? }),
-            FieldKind::Display => tokens.extend(quote! { % }),
+            AttributeKind::Debug => tokens.extend(quote! { ? }),
+            AttributeKind::Display => tokens.extend(quote! { % }),
             _ => {}
         }
     }
@@ -398,13 +405,10 @@ impl ToTokens for Level {
 }
 
 mod kw {
-    syn::custom_keyword!(fields);
+    syn::custom_keyword!(attributes);
     syn::custom_keyword!(skip);
+    syn::custom_keyword!(skip_all);
     syn::custom_keyword!(level);
-    syn::custom_keyword!(target);
-    syn::custom_keyword!(parent);
-    syn::custom_keyword!(follows_from);
     syn::custom_keyword!(name);
-    syn::custom_keyword!(err);
-    syn::custom_keyword!(ret);
+    syn::custom_keyword!(scope);
 }
